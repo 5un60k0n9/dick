@@ -1,184 +1,120 @@
-const Command = require('./command');
-const { Message, OpType, Location, Profile } = require('../curve-thrift/line_types');
-
-class LINE extends Command {
-    constructor() {
-        super();
-        this.receiverID = '';
-        this.checkReader = [];
-        this.stateStatus = {
-            cancel: 0,
-            kick: 0,
-        };
-        this.messages;
-        this.payload;
-        this.stateUpload =  {
-                file: '',
-                name: '',
-                group: '',
-                sender: ''
-            }
-    }
-
-
-    get myBot() {
-        const bot = ['u1cab5ef6299af4713353b9843479952d','u22d94aac4e1659eb6f375ffc7cb17a53'];
-        return bot; 
-    }
-
-    isAdminOrBot(param) {
-        return this.myBot.includes(param);
-    }
-
-    getOprationType(operations) {
-        for (let key in OpType) {
-            if(operations.type == OpType[key]) {
-                if(key !== 'NOTIFIED_UPDATE_PROFILE') {
-                    console.info(`[* ${operations.type} ] ${key} `);
-                }
-            }
-        }
-    }
-
-    poll(operation) {
-        if(operation.type == 25 || operation.type == 26) {
-            let message = new Message(operation.message);
-            this.receiverID = message.to = (operation.message.to === this.myBot[0]) ? operation.message._from : operation.message.to ;
-            Object.assign(message,{ ct: operation.createdTime.toString() });
-            this.textMessage(message)
-        }
-
-        if(operation.type == 13 && this.stateStatus.cancel == 1) {
-            this._cancel(operation.param2,operation.param1);
-            
-        }
-
-        if(operation.type == 11 && !this.isAdminOrBot(operation.param2) && this.stateStatus.qrp == 1) {
-            this._kickMember(operation.param1,[operation.param2]);
-            this.messages.to = operation.param1;
-            this.qrOpenClose();
-        }
-
-        if(operation.type == 19) { //ada kick
-            // op1 = group nya
-            // op2 = yang 'nge' kick
-            // op3 = yang 'di' kick
-            if(this.isAdminOrBot(operation.param3)) {
-                this._invite(operation.param1,[operation.param3]);
-            }
-            if(!this.isAdminOrBot(operation.param2)){
-                this._kickMember(operation.param1,[operation.param2]);
-            } 
-
-        }
-
-        if(operation.type == 55){ //ada reader
-            const idx = this.checkReader.findIndex((v) => {
-                if(v.group == operation.param1) {
-                    return v
-                }
-            })
-            if(this.checkReader.length < 1 || idx == -1) {
-                this.checkReader.push({ group: operation.param1, users: [operation.param2], timeSeen: [operation.param3] });
-            } else {
-                for (var i = 0; i < this.checkReader.length; i++) {
-                    if(this.checkReader[i].group == operation.param1) {
-                        if(!this.checkReader[i].users.includes(operation.param2)) {
-                            this.checkReader[i].users.push(operation.param2);
-                            this.checkReader[i].timeSeen.push(operation.param3);
-                        }
-                    }
-                }
-            }
-        }
-
-        if(operation.type == 13) { // diinvite
-            if(this.isAdminOrBot(operation.param2)) {
-                return this._acceptGroupInvitation(operation.param1);
-            } else {
-                return this._cancel(operation.param1,this.myBot);
-            }
-        }
-        this.getOprationType(operation);
-    }
-
-    command(msg, reply) {
-        if(this.messages.text !== null) {
-            if(this.messages.text === msg.trim()) {
-                if(typeof reply === 'function') {
-                    reply();
-                    return;
-                }
-                if(Array.isArray(reply)) {
-                    reply.map((v) => {
-                        this._sendMessage(this.messages, v);
-                    })
-                    return;
-                }
-                return this._sendMessage(this.messages, reply);
-            }
-        }
-    }
-
-    async textMessage(messages) {
-        this.messages = messages;
-        let payload = (this.messages.text !== null) ? this.messages.text.split(' ').splice(1).join(' ') : '' ;
-        let receiver = messages.to;
-        let sender = messages.from;
-        
-        this.command('Halo', ['halo juga','ini siapa?']);
-        this.command('kamu siapa', this.getProfile.bind(this));
-        this.command('.status', `Your Status: ${JSON.stringify(this.stateStatus)}`);
-        this.command(`.left ${payload}`, this.leftGroupByName.bind(this));
-        this.command('.speed', this.getSpeed.bind(this));
-        this.command('.kernel', this.checkKernel.bind(this));
-        this.command(`kick ${payload}`, this.OnOff.bind(this));
-        this.command(`cancel ${payload}`, this.OnOff.bind(this));
-        this.command(`qrp ${payload}`, this.OnOff.bind(this));
-        this.command(`.kickall ${payload}`,this.kickAll.bind(this));
-        this.command(`.cancelall ${payload}`, this.cancelMember.bind(this));
-        this.command(`.set`,this.setReader.bind(this));
-        this.command(`.recheck`,this.rechecks.bind(this));
-        this.command(`.clearall`,this.clearall.bind(this));
-        this.command('.myid',`Your ID: ${messages.from}`)
-        this.command(`.ip ${payload}`,this.checkIP.bind(this))
-        this.command(`.ig ${payload}`,this.checkIG.bind(this))
-        this.command(`.qr ${payload}`,this.qrOpenClose.bind(this))
-        this.command(`.joinqr ${payload}`,this.joinQr.bind(this));
-        this.command(`.spam ${payload}`,this.spamGroup.bind(this));
-        this.command(`.creator`,this.creator.bind(this));
-
-        this.command(`pap ${payload}`,this.searchLocalImage.bind(this));
-        this.command(`.upload ${payload}`,this.prepareUpload.bind(this));
-        this.command(`vn ${payload}`,this.vn.bind(this));
-
-        if(messages.contentType == 13) {
-            messages.contentType = 0;
-            if(!this.isAdminOrBot(messages.contentMetadata.mid)) {
-                this._sendMessage(messages,messages.contentMetadata.mid);
-            }
-            return;
-        }
-
-        if(this.stateUpload.group == messages.to && [1,2,3].includes(messages.contentType)) {
-            if(sender === this.stateUpload.sender) {
-                this.doUpload(messages);
-                return;
-            } else {
-                messages.contentType = 0;
-                this._sendMessage(messages,'Wrong Sender !! Reseted');
-            }
-            this.resetStateUpload();
-            return;
-        }
-
-        // if(cmd == 'lirik') {
-        //     let lyrics = await this._searchLyrics(payload);
-        //     this._sendMessage(seq,lyrics);
-        // }
-
-    }
-
-}
-
-module.exports = LINE;
+const LineAPI = require(&apos;./api&apos;);<br>
+const { Message, OpType, Location } = require(&apos;../curve-thrift/line_types&apos;);<br>
+let exec = require(&apos;child_process&apos;).exec;<br>
+<br>
+const myBot = [&apos;u03e28057cac4dfaccafaa8798dcd9d33&apos;,&apos;u96b72a6a2b23143a9959aca9114ee347&apos;,&apos;u1b6b7339ab719a4294001eb74e410cb3&apos;];<br>
+var vx = {};var midnornama = &quot;&quot;;var pesane = &quot;&quot;;//DO NOT CHANGE THIS<br>
+var banList = [&apos;u02a0665c44d3fa83e0864ef91ea76f8d&apos;];//Banned list<br>
+var waitMsg = &quot;no&quot;; //DO NOT CHANGE THIS<br>
+var msgText = &quot;Bro.... ini tes, jangan dibales !&quot;;<br>
+<br>
+function isAdminOrBot(param) {<br>
+&nbsp;&nbsp;&nbsp; return myBot.includes(param);<br>
+}<br>
+<br>
+function isBanned(banList, param) {<br>
+&nbsp;&nbsp;&nbsp; return banList.includes(param);<br>
+}<br>
+<br>
+class LINE extends LineAPI {<br>
+&nbsp;&nbsp;&nbsp; constructor() {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; super();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; this.receiverID = &apos;&apos;;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; this.checkReader = [];<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; this.stateStatus = {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; cancel: 0,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; kick: 1,<br>
+			salam: 1,<br>
+			mute: 0<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+		this.keyhelp = &quot;\n\<br>
+====================\n\<br>
+# Keyword List\n\n\<br>
+▪ !ban *ADMIN*\n\<br>
+▪ !banlist\n\<br>
+▪ !botleft *ADMIN*\n\<br>
+▪ !cekid\n\<br>
+▪ !gURL\n\<br>
+▪ !halo\n\<br>
+▪ !kepo\n\<br>
+▪ !key\n\<br>
+▪ !kickall *ADMIN*\n\<br>
+▪ !kickme\n\<br>
+▪ !msg\n\<br>
+▪ !mute *ADMIN*\n\<br>
+▪ !myid\n\<br>
+▪ !sendcontact\n\<br>
+▪ !speed\n\<br>
+▪ !tagall *ADMIN*\n\<br>
+▪ !unmute *ADMIN*\n\<br>
+\n\n# Gunakan bot dengan bijak ^_^&quot;;<br>
+&nbsp;&nbsp;&nbsp; }<br>
+<br>
+&nbsp;&nbsp;&nbsp; getOprationType(operations) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; for (let key in OpType) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if(operations.type == OpType[key]) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if(key !== &apos;NOTIFIED_UPDATE_PROFILE&apos;) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; console.info(`[* ${operations.type} ] ${key} `);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+&nbsp;&nbsp;&nbsp; }<br>
+<br>
+&nbsp;&nbsp;&nbsp; poll(operation) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if(operation.type == 25 || operation.type == 26) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; const txt = (operation.message.text !== &apos;&apos; &amp;&amp; operation.message.text != null ) ? operation.message.text : &apos;&apos; ;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; let message = new Message(operation.message);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; this.receiverID = message.to = (operation.message.to === myBot[0]) ? operation.message.from : operation.message.to ;<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Object.assign(message,{ ct: operation.createdTime.toString() });<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if(waitMsg == &quot;yes&quot; &amp;&amp; operation.message.from == vx[0] &amp;&amp; this.stateStatus.mute != 1){<br>
+				this.textMessage(txt,message,message.text)<br>
+			}else if(this.stateStatus.mute != 1){this.textMessage(txt,message);<br>
+			}else if(txt == &quot;!unmute&quot; &amp;&amp; isAdminOrBot(operation.message.from) &amp;&amp; this.stateStatus.mute == 1){<br>
+			&nbsp;&nbsp;&nbsp; this.stateStatus.mute = 0;<br>
+			&nbsp;&nbsp;&nbsp; this._sendMessage(message,&quot;ヽ(^。^)ノ&quot;)<br>
+		&nbsp;&nbsp;&nbsp; }else{console.info(&quot;muted&quot;);}<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if(operation.type == 13 &amp;&amp; this.stateStatus.cancel == 1) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; this.cancelAll(operation.param1);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+		<br>
+		if(operation.type == 43 || operation.type == 41 || operation.type == 24 || operation.type == 15 || operation.type == 21){console.info(operation);}<br>
+		<br>
+		if(operation.type == 16 &amp;&amp; this.stateStatus.salam == 1){//join group<br>
+			let halo = new Message();<br>
+			halo.to = operation.param1;<br>
+			halo.text = &quot;Halo, Salam Kenal ^_^ !&quot;;<br>
+			this._client.sendMessage(0, halo);<br>
+		}<br>
+		<br>
+		if(operation.type == 17 &amp;&amp; this.stateStatus.salam == 1 &amp;&amp; isAdminOrBot(operation.param2)) {//ada yang join<br>
+		&nbsp;&nbsp;&nbsp; let halobos = new Message();<br>
+			halobos.to = operation.param1;<br>
+			halobos.toType = 2;<br>
+			halobos.text = &quot;Halo bos !, selamat datang di group ini bos !&quot;;<br>
+			this._client.sendMessage(0, halobos);<br>
+		}else if(operation.type == 17 &amp;&amp; this.stateStatus.salam == 1){//ada yang join<br>
+			let seq = new Message();<br>
+			seq.to = operation.param1;<br>
+			//halo.siapa = operation.param2;<br>
+			this.textMessage(&quot;0101&quot;,seq,operation.param2);<br>
+			//this._client.sendMessage(0, halo);<br>
+		}<br>
+		<br>
+		if(operation.type == 15 &amp;&amp; isAdminOrBot(operation.param2)) {//ada yang leave<br>
+		&nbsp;&nbsp;&nbsp; let babay = new Message();<br>
+			babay.to = operation.param1;<br>
+			babay.toType = 2;<br>
+			babay.text = &quot;Ada apa bos ? kok leave ?&quot;;<br>
+			this._invite(operation.param1,[operation.param2]);<br>
+			this._client.sendMessage(0, babay);<br>
+		}else if(operation.type == 15 &amp;&amp; !isAdminOrBot(operation.param2)){<br>
+			let seq = new Message();<br>
+			seq.to = operation.param1;<br>
+			this.textMessage(&quot;0102&quot;,seq,operation.param2);<br>
+		}<br>
+<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if(operation.type == 19) { //ada kick<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; // op1 = group nya<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
